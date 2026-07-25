@@ -44,44 +44,54 @@ logger = logging.getLogger(__name__)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
-def _yf_symbol(nse_symbol: str) -> str:
-    s = nse_symbol.strip().upper()
-    return s if s.endswith(".NS") else s + ".NS"
-
 
 def _fetch_hourly_ohlcv(symbol: str) -> pd.DataFrame:
     """Download the last 5 trading days of 1-hour candles.
+    Tries NSE (.NS) first, then BSE (.BO) as fallback.
     Retries on rate-limit errors with exponential backoff.
     """
     import time as _time
-    yf_sym = _yf_symbol(symbol)
-    kwargs = dict(
-        period="5d",
-        interval="1h",
-        auto_adjust=True,
-        progress=False,
-        threads=False,
-    )
-    if _YF_SESSION is not None:
-        kwargs["session"] = _YF_SESSION
 
-    for attempt in range(1, 4):
-        try:
-            df = yf.download(yf_sym, **kwargs)
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            return df.dropna(subset=["Close", "Open"])
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "rate" in msg or "429" in msg or "too many" in msg:
-                wait = 3 * attempt
-                logger.warning("Rate limited for %s – retrying in %ds …", symbol, wait)
-                _time.sleep(wait)
-            else:
-                logger.warning("Hourly data fetch failed for %s: %s", symbol, exc)
-                return pd.DataFrame()
-    logger.warning("Giving up on hourly data for %s after 3 rate-limit retries", symbol)
-    return pd.DataFrame()
+    def _download(ticker: str) -> pd.DataFrame:
+        kwargs = dict(
+            period="5d",
+            interval="1h",
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        if _YF_SESSION is not None:
+            kwargs["session"] = _YF_SESSION
+        for attempt in range(1, 4):
+            try:
+                df = yf.download(ticker, **kwargs)
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+                df = df.dropna(subset=["Close", "Open"])
+                return df
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "rate" in msg or "429" in msg or "too many" in msg:
+                    wait = 3 * attempt
+                    logger.warning("Rate limited for %s – retrying in %ds …", ticker, wait)
+                    _time.sleep(wait)
+                else:
+                    logger.warning("Hourly data fetch failed for %s: %s", ticker, exc)
+                    return pd.DataFrame()
+        return pd.DataFrame()
+
+    s = symbol.strip().upper()
+    # Try NSE first
+    df = _download(s if s.endswith(".NS") else s + ".NS")
+    if not df.empty:
+        return df
+    # Fallback: try BSE
+    logger.debug("%s: no data on .NS, trying .BO …", symbol)
+    bse_sym = s.removesuffix(".NS") + ".BO"
+    df = _download(bse_sym)
+    if not df.empty:
+        logger.info("%s: using BSE (.BO) data", symbol)
+    return df
 
 
 class CandleAnalyzer:
