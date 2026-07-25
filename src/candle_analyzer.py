@@ -103,8 +103,11 @@ class CandleAnalyzer:
         """
         df = _fetch_hourly_ohlcv(symbol)
 
-        if df.empty or len(df) < self._n:
-            return False, {"passed": False, "reason": "insufficient hourly data"}
+        if df.empty:
+            return False, {"passed": False, "reason": "no hourly data on Yahoo Finance"}
+
+        if len(df) < self._n:
+            return False, {"passed": False, "reason": f"only {len(df)} candle(s) available (need {self._n})"}
 
         # Take the last N *completed* candles (exclude the current live candle)
         window = df.iloc[-(self._n + 1):-1]

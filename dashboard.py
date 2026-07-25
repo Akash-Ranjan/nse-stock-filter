@@ -196,15 +196,20 @@ def run_pipeline(status_container) -> list:
         final = []
         for sym, vol_detail in vol_passed:
             ok, candle_detail = fltr._candle_analyzer.is_hourly_bullish(sym)
-            icon = "✅" if ok else "❌"
-            ratio = f"{candle_detail.get('bullish_ratio', 0)*100:.0f}%" if candle_detail.get('bullish_ratio') is not None else "N/A"
-            s.write(f"  {icon} `{sym}` — {ratio} bullish candles")
-            if ok:
-                final.append(FilterResult(
-                    symbol=sym,
-                    volume_detail=vol_detail,
-                    candle_detail=candle_detail,
-                ))
+            reason = candle_detail.get("reason", "")
+            if reason:
+                # Hourly data unavailable from Yahoo Finance — treat as data gap, not a fail
+                s.write(f"  ⚠️ `{sym}` — hourly data unavailable ({reason}); skipping")
+            else:
+                icon = "✅" if ok else "❌"
+                ratio = f"{candle_detail.get('bullish_ratio', 0)*100:.0f}%"
+                s.write(f"  {icon} `{sym}` — {ratio} bullish candles")
+                if ok:
+                    final.append(FilterResult(
+                        symbol=sym,
+                        volume_detail=vol_detail,
+                        candle_detail=candle_detail,
+                    ))
             time.sleep(1.5)
 
         label = f"Done — {len(final)} stock(s) passed all filters" if final else "Done — no stocks passed all filters"
