@@ -198,8 +198,13 @@ def run_pipeline(status_container) -> list:
             ok, candle_detail = fltr._candle_analyzer.is_hourly_bullish(sym)
             reason = candle_detail.get("reason", "")
             if reason:
-                # Hourly data unavailable from Yahoo Finance — treat as data gap, not a fail
-                s.write(f"  ⚠️ `{sym}` — hourly data unavailable ({reason}); skipping")
+                s.write(f"  ⚠️ `{sym}` — no hourly data ({reason}); added as soft pass")
+                final.append(FilterResult(
+                    symbol=sym,
+                    volume_detail=vol_detail,
+                    candle_detail=candle_detail,
+                    candle_data_available=False,
+                ))
             else:
                 icon = "✅" if ok else "❌"
                 ratio = f"{candle_detail.get('bullish_ratio', 0)*100:.0f}%"
@@ -209,6 +214,7 @@ def run_pipeline(status_container) -> list:
                         symbol=sym,
                         volume_detail=vol_detail,
                         candle_detail=candle_detail,
+                        candle_data_available=True,
                     ))
             time.sleep(1.5)
 
@@ -316,27 +322,40 @@ def _render_stock_card(r: FilterResult) -> None:
     vol = r.volume_detail
     cnd = r.candle_detail
 
-    vol_ratio    = vol.get("ratio", 0)
-    bull_pct     = int(cnd.get("bullish_ratio", 0) * 100)
-    last_price   = cnd.get("last_close", "—")
-    green_cnt    = cnd.get("green_candles", 0)
-    total_cnt    = cnd.get("candles_checked", 0)
-    drift        = cnd.get("drift_up", False)
+    vol_ratio  = vol.get("ratio", 0)
+    last_price = cnd.get("last_close", "—")
+    green_cnt  = cnd.get("green_candles", 0)
+    total_cnt  = cnd.get("candles_checked", 0)
+    drift      = cnd.get("drift_up", False)
+
+    if r.candle_data_available:
+        bull_pct      = int(cnd.get("bullish_ratio", 0) * 100)
+        candle_badge  = f'<span class="badge badge-blue">{bull_pct}% Bullish</span>'
+    else:
+        candle_badge  = '<span class="badge badge-orange">⚠️ No hourly data</span>'
 
     st.markdown(f"""
     <div class="stock-card">
       <span class="stock-header">📊 {r.symbol}</span>
       <span class="badge badge-green">FII/DII Bought</span>
       <span class="badge badge-orange">Vol {vol_ratio:.2f}×</span>
-      <span class="badge badge-blue">{bull_pct}% Bullish</span>
+      {candle_badge}
     </div>
     """, unsafe_allow_html=True)
 
+    if not r.candle_data_available:
+        st.warning(
+            "Hourly candle data is unavailable for this stock on Yahoo Finance. "
+            "The FII/DII buying and volume surge signals are still valid — "
+            "verify the chart manually before trading.",
+            icon="⚠️",
+        )
+
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Last Close",      f"₹{last_price}" if isinstance(last_price, float) else "—")
-    c2.metric("Volume Ratio",    f"{vol_ratio:.2f}×", delta="surging" if vol_ratio >= config.VOLUME_MULTIPLIER else None)
-    c3.metric("Green Candles",   f"{green_cnt} / {total_cnt}")
-    c4.metric("Price Drift Up",  "Yes" if drift else "No")
+    c1.metric("Last Close",     f"₹{last_price}" if isinstance(last_price, float) else "—")
+    c2.metric("Volume Ratio",   f"{vol_ratio:.2f}×", delta="surging" if vol_ratio >= config.VOLUME_MULTIPLIER else None)
+    c3.metric("Green Candles",  f"{green_cnt} / {total_cnt}" if r.candle_data_available else "—")
+    c4.metric("Price Drift Up", "Yes" if drift else "—" if not r.candle_data_available else "No")
 
     col_v, col_c = st.columns(2)
     with col_v:
@@ -347,7 +366,7 @@ def _render_stock_card(r: FilterResult) -> None:
         if fig_c:
             st.plotly_chart(fig_c, use_container_width=True, key=f"candle_{r.symbol}")
         else:
-            st.info("Hourly candle data unavailable.")
+            st.info("Hourly candle data unavailable — check NSE/broker chart directly.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -431,7 +450,12 @@ with tab_live:
 
         if results:
             _save_result(results)
-            st.success(f"✅ **{len(results)} stock(s)** passed all three filters!")
+            full_pass  = [r for r in results if r.candle_data_available]
+            soft_pass  = [r for r in results if not r.candle_data_available]
+            label = f"✅ **{len(full_pass)} stock(s)** passed all filters"
+            if soft_pass:
+                label += f" · ⚠️ **{len(soft_pass)}** soft pass (FII/DII + volume only, no hourly data)"
+            st.success(label)
             for r in results:
                 _render_stock_card(r)
         else:
@@ -443,12 +467,12 @@ with tab_live:
             rows = []
             for r in results:
                 rows.append({
-                    "Symbol":       r.symbol,
-                    "Last Close":   f"₹{r.candle_detail.get('last_close', '—')}",
-                    "Yest. Volume": f"{r.volume_detail.get('yesterday_vol', 0):,}",
-                    "Vol Ratio":    f"{r.volume_detail.get('ratio', 0):.2f}×",
-                    "Green Candles":f"{r.candle_detail.get('green_candles',0)}/{r.candle_detail.get('candles_checked',0)}",
-                    "Drift Up":     "✅" if r.candle_detail.get("drift_up") else "❌",
+                    "Symbol":        r.symbol,
+                    "Last Close":    f"₹{r.candle_detail.get('last_close', '—')}",
+                    "Yest. Volume":  f"{r.volume_detail.get('yesterday_vol', 0):,}",
+                    "Vol Ratio":     f"{r.volume_detail.get('ratio', 0):.2f}×",
+                    "Green Candles": f"{r.candle_detail.get('green_candles',0)}/{r.candle_detail.get('candles_checked',0)}" if r.candle_data_available else "⚠️ No data",
+                    "Drift Up":      "✅" if r.candle_detail.get("drift_up") else ("⚠️" if not r.candle_data_available else "❌"),
                 })
             st.dataframe(
                 pd.DataFrame(rows),

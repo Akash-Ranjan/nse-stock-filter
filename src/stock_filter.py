@@ -30,6 +30,7 @@ class FilterResult:
     fii_dii_bought: bool = True
     volume_detail: dict = field(default_factory=dict)
     candle_detail: dict = field(default_factory=dict)
+    candle_data_available: bool = True   # False when no hourly data source has coverage
 
     def as_dict(self) -> dict:
         return {
@@ -37,6 +38,7 @@ class FilterResult:
             "fii_dii_bought_yesterday": self.fii_dii_bought,
             "volume": self.volume_detail,
             "hourly_candle": self.candle_detail,
+            "candle_data_available": self.candle_data_available,
         }
 
 
@@ -91,11 +93,27 @@ class StockFilter:
         final: List[FilterResult] = []
         for symbol, vol_detail in volume_passed:
             ok, candle_detail = self._candle_analyzer.is_hourly_bullish(symbol)
+            reason = candle_detail.get("reason", "")
+            no_data = bool(reason)
+
             if ok:
                 final.append(FilterResult(
                     symbol=symbol,
                     volume_detail=vol_detail,
                     candle_detail=candle_detail,
+                    candle_data_available=True,
+                ))
+            elif no_data:
+                # Hourly data unavailable — include as soft pass so the user
+                # can still act on the FII/DII + volume signal.
+                logger.info(
+                    "%s: no hourly data (%s) — included as soft pass", symbol, reason
+                )
+                final.append(FilterResult(
+                    symbol=symbol,
+                    volume_detail=vol_detail,
+                    candle_detail=candle_detail,
+                    candle_data_available=False,
                 ))
             time.sleep(1.5)
 
