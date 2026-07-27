@@ -40,6 +40,10 @@ _SESSION.headers["User-Agent"] = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
+# Cache bhavcopy DataFrames by date string to avoid re-downloading the same
+# ~5 MB file multiple times when checking several symbols in one pipeline run.
+_BHAVCOPY_CACHE: Dict[str, Optional[pd.DataFrame]] = {}
+
 
 def _trading_days_before(d: date, n: int) -> List[date]:
     """Return the last *n* weekday dates on or before *d* (newest first)."""
@@ -53,21 +57,31 @@ def _trading_days_before(d: date, n: int) -> List[date]:
 
 
 def _fetch_bhavcopy(d: date) -> Optional[pd.DataFrame]:
-    """Download the bhavcopy for date *d*. Returns None on failure."""
+    """Download the bhavcopy for date *d*. Returns None on failure.
+    Results are cached in-memory so the same file is not re-downloaded
+    multiple times during a single pipeline run.
+    """
+    key = d.isoformat()
+    if key in _BHAVCOPY_CACHE:
+        return _BHAVCOPY_CACHE[key]
+
     date_str = d.strftime("%d%m%Y")
     url = _BHAVCOPY_URL.format(date=date_str)
+    result: Optional[pd.DataFrame] = None
     try:
         resp = _SESSION.get(url, timeout=config.NSE_REQUEST_TIMEOUT)
         if resp.status_code == 404:
             logger.debug("Bhavcopy not found for %s (holiday?)", d)
-            return None
-        resp.raise_for_status()
-        df = pd.read_csv(io.StringIO(resp.text))
-        df.columns = [c.strip().upper() for c in df.columns]
-        return df
+        else:
+            resp.raise_for_status()
+            df = pd.read_csv(io.StringIO(resp.text))
+            df.columns = [c.strip().upper() for c in df.columns]
+            result = df
     except Exception as exc:
         logger.warning("Bhavcopy fetch failed for %s: %s", d, exc)
-        return None
+
+    _BHAVCOPY_CACHE[key] = result
+    return result
 
 
 def _get_volume(d: date, symbol: str) -> Optional[float]:

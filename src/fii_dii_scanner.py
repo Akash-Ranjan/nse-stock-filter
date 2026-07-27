@@ -49,6 +49,10 @@ def _is_fii_dii(client_name: str) -> bool:
 def _parse_csv(csv_text: str, target_date: date) -> pd.DataFrame:
     """
     Parse a bulk/block CSV string and return only rows matching *target_date*.
+    If the date filter returns empty (e.g. day after a market holiday where the
+    CSV still holds pre-holiday data), all rows are returned so the pipeline
+    continues to work correctly — NSE's bulk/block CSVs always contain exactly
+    one trading day's data.
     Returns an empty DataFrame if parsing fails.
     """
     try:
@@ -60,10 +64,20 @@ def _parse_csv(csv_text: str, target_date: date) -> pd.DataFrame:
     # Normalise column names
     df.columns = [c.strip().lower().replace(" ", "_").replace("/", "_") for c in df.columns]
 
-    # Filter to the target date (NSE formats: '24-JUL-2026')
     if "date" in df.columns:
         target_str = target_date.strftime("%d-%b-%Y").upper()  # e.g. 24-JUL-2026
-        df = df[df["date"].str.upper().str.strip() == target_str]
+        filtered = df[df["date"].str.upper().str.strip() == target_str]
+        if not filtered.empty:
+            return filtered
+        # Date mismatch — likely a post-holiday run where the CSV still holds
+        # the pre-holiday trading day's data.  Use all rows since NSE guarantees
+        # the file contains exactly one day's worth of deals.
+        csv_date = df["date"].iloc[0] if len(df) > 0 else "unknown"
+        logger.info(
+            "Date filter for %s returned empty; using all %d CSV rows "
+            "(CSV date appears to be %s — possible market holiday on %s)",
+            target_str, len(df), csv_date, target_str,
+        )
 
     return df
 
